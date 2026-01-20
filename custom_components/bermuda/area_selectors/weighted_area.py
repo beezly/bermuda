@@ -560,7 +560,8 @@ class WeightedAreaSelector(AreaSelectorBase):
                 area_weights[area_id] *= boost_factor
             elif similarity > 0.3:
                 # Add scanner-less area based on fingerprint match
-                # Weight = base_weight * fingerprint_weight * similarity
-                # This lets trained areas without scanners compete with scanner-based areas
-                # Only add if similarity is reasonably strong (> 0.3)
-                area_weights[area_id] = base_weight * self.fingerprint_weight * similarity
+                # Use base_weight * similarity to give scanner-less areas a fair chance
+                # to compete with scanner-based areas when fingerprint match is strong.
+                # A perfect match (similarity=1.0) gets full base_weight.
+                # fingerprint_weight still scales the influence (higher = more aggressive)
+                area_weights[area_id] = base_weight * similarity * (0.5 + self.fingerprint_weight)
