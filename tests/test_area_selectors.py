@@ -41,7 +41,7 @@ def mock_advert():
     advert.rssi = -65
     advert.stamp = 100.0
     advert.name = "Scanner1"
-    advert.source_address = "11:22:33:44:55:66"
+    advert.scanner_address = "11:22:33:44:55:66"
     advert.hist_rssi = [-65, -66, -64, -65, -67]
     advert.hist_distance_by_interval = [2.0, 2.1, 1.9, 2.0, 2.2]
     return advert
@@ -57,7 +57,7 @@ def mock_advert2():
     advert.rssi = -72
     advert.stamp = 100.0
     advert.name = "Scanner2"
-    advert.source_address = "AA:BB:CC:DD:EE:FF"
+    advert.scanner_address = "AA:BB:CC:DD:EE:FF"
     advert.hist_rssi = [-72, -73, -71, -72, -74]
     advert.hist_distance_by_interval = [3.5, 3.6, 3.4, 3.5, 3.7]
     return advert

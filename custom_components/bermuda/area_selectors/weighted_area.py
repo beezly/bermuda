@@ -327,7 +327,7 @@ class WeightedAreaSelector(AreaSelectorBase):
         scanner_rssi: dict[str, float] = {}
         for advert in device.adverts.values():
             if self.validate_advert(advert, current_stamp) and advert.rssi is not None:
-                scanner_rssi[advert.source_address] = advert.rssi
+                scanner_rssi[advert.scanner_address] = advert.rssi
 
         # Record fingerprint if we have RSSI data
         if scanner_rssi:
@@ -466,7 +466,7 @@ class WeightedAreaSelector(AreaSelectorBase):
         scanner_rssi: dict[str, float] = {}
         for advert in valid_adverts:
             if advert.rssi is not None:
-                scanner_rssi[advert.source_address] = advert.rssi
+                scanner_rssi[advert.scanner_address] = advert.rssi
 
         if not scanner_rssi:
             return
@@ -508,7 +508,7 @@ class WeightedAreaSelector(AreaSelectorBase):
         scanner_rssi: dict[str, float] = {}
         for advert in valid_adverts:
             if advert.rssi is not None:
-                scanner_rssi[advert.source_address] = advert.rssi
+                scanner_rssi[advert.scanner_address] = advert.rssi
 
         if not scanner_rssi:
             return
