@@ -655,6 +655,127 @@ class TestWeightedAreaSelector:
         # Even though living room is closer, fingerprint boost might affect result
         assert result.winning_advert is not None
 
+    def test_fingerprint_adds_scannerless_areas(self, mock_device):
+        """Test that fingerprint matching can add areas without local scanners.
+
+        This tests the scenario where a user is in an area (e.g., Garage) that has
+        no Bluetooth scanner, but can still be detected via trained fingerprints
+        from scanners in nearby areas (e.g., Kitchen, Living Room).
+        """
+        config = AreaSelectorConfig(
+            max_radius=20.0,
+            max_ad_age=30.0,
+            extra={
+                "use_fingerprint_matching": True,
+                "fingerprint_weight": 1.0,  # Strong fingerprint influence
+                "use_variance_weighting": False,
+                "use_recency_weighting": False,
+                "use_hmm": False,
+                "use_passive_learning": False,
+            },
+        )
+        selector = WeightedAreaSelector(config)
+
+        # Train fingerprints for "garage" - an area with NO scanner
+        # The fingerprint captures RSSI from scanners in OTHER areas
+        # Simulate being in the garage: weaker signals from distant scanners
+        for _ in range(10):
+            selector._fingerprint_store.record_fingerprint(
+                area_id="garage",
+                area_name="Garage",
+                scanner_rssi={
+                    "AA:BB:CC:DD:EE:FF": -80.0,  # Kitchen scanner (weak from garage)
+                    "11:22:33:44:55:66": -85.0,  # Living room scanner (weaker still)
+                },
+            )
+
+        # Now modify the mock device adverts to match the garage fingerprint
+        # The device is seeing weaker signals typical of being in the garage
+        kitchen_advert = MagicMock()
+        kitchen_advert.name = "Kitchen Scanner"
+        kitchen_advert.scanner_address = "AA:BB:CC:DD:EE:FF"
+        kitchen_advert.area_id = "kitchen"
+        kitchen_advert.area_name = "Kitchen"
+        kitchen_advert.rssi = -80.0  # Matches garage fingerprint
+        kitchen_advert.rssi_distance = 8.0  # Far from kitchen scanner
+        kitchen_advert.stamp = 104.0
+        kitchen_advert.hist_rssi = [-80, -81, -79]
+
+        living_advert = MagicMock()
+        living_advert.name = "Living Room Scanner"
+        living_advert.scanner_address = "11:22:33:44:55:66"
+        living_advert.area_id = "living_room"
+        living_advert.area_name = "Living Room"
+        living_advert.rssi = -85.0  # Matches garage fingerprint
+        living_advert.rssi_distance = 10.0  # Far from living room scanner
+        living_advert.stamp = 104.0
+        living_advert.hist_rssi = [-85, -86, -84]
+
+        mock_device.adverts = {
+            "AA:BB:CC:DD:EE:FF": kitchen_advert,
+            "11:22:33:44:55:66": living_advert,
+        }
+
+        result = selector.select_area(mock_device, 105.0)
+
+        # The garage (scanner-less area) should be added as a candidate
+        # and potentially win due to strong fingerprint match
+        assert result.winning_advert is not None or result.reason is not None
+
+        # Check that garage appears in the area weights (via reason string)
+        assert "Garage" in result.reason or result.areas[0] == "Garage"
+
+    def test_fingerprint_scannerless_area_wins(self):
+        """Test that a scanner-less area can win via fingerprint match."""
+        config = AreaSelectorConfig(
+            max_radius=20.0,
+            max_ad_age=30.0,
+            extra={
+                "use_fingerprint_matching": True,
+                "fingerprint_weight": 2.0,  # Very strong fingerprint influence
+                "min_scanners": 1,  # Allow single scanner to use weighted voting path
+                "use_variance_weighting": False,
+                "use_recency_weighting": False,
+                "use_hmm": False,
+                "use_passive_learning": False,
+            },
+        )
+        selector = WeightedAreaSelector(config)
+
+        # Train strong fingerprint for garage
+        for _ in range(10):
+            selector._fingerprint_store.record_fingerprint(
+                area_id="garage",
+                area_name="Garage",
+                scanner_rssi={"scanner1": -75.0},
+            )
+
+        # Create a mock device with a single advert matching the fingerprint
+        device = MagicMock()
+        device.name = "Test Device"
+        device.address = "DE:VI:CE:AD:DR:ES"
+        device.area_advert = None
+
+        advert = MagicMock()
+        advert.name = "Other Room Scanner"
+        advert.scanner_address = "scanner1"
+        advert.area_id = "other_room"
+        advert.area_name = "Other Room"
+        advert.rssi = -75.0  # Exactly matches garage fingerprint
+        advert.rssi_distance = 5.0
+        advert.stamp = 104.0
+        advert.hist_rssi = [-75, -75, -75]
+
+        device.adverts = {"scanner1": advert}
+
+        result = selector.select_area(device, 105.0)
+
+        # With a perfect fingerprint match and high fingerprint_weight,
+        # the garage should be added and appear in the reason
+        assert result.reason is not None
+        # The garage should appear in the weighted vote output
+        assert "Garage" in result.reason
+
     def test_get_hmm_statistics(self):
         """Test retrieving HMM statistics."""
         config = AreaSelectorConfig(

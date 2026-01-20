@@ -187,40 +187,59 @@ class WeightedAreaSelector(AreaSelectorBase):
 
         # Find the area with the highest weight
         winning_area_id = max(area_weights.keys(), key=lambda x: area_weights[x])
-        winning_advert = area_adverts[winning_area_id]
+
+        # Get winning advert - may be None for fingerprint-only areas (no local scanner)
+        winning_advert = area_adverts.get(winning_area_id)
+
+        # For scanner-less areas, get the area name from fingerprint store
+        if winning_area_id not in area_names:
+            fp_data = self._fingerprint_store.get_area_fingerprint(winning_area_id)
+            if fp_data is not None:
+                area_names[winning_area_id] = fp_data.area_name or winning_area_id
 
         # Build diagnostic info
         sorted_areas = sorted(area_weights.items(), key=lambda x: x[1], reverse=True)
         top_areas = sorted_areas[:2] if len(sorted_areas) >= 2 else sorted_areas
 
+        # Helper to get area name (including fingerprint-only areas)
+        def get_area_name(aid: str) -> str:
+            if aid in area_names:
+                return area_names[aid]
+            fp = self._fingerprint_store.get_area_fingerprint(aid)
+            return fp.area_name if fp and fp.area_name else aid
+
         if len(top_areas) >= 2:
             result.areas = (
-                area_names.get(top_areas[0][0], ""),
-                area_names.get(top_areas[1][0], ""),
+                get_area_name(top_areas[0][0]),
+                get_area_name(top_areas[1][0]),
             )
-            result.distance = (
-                area_adverts[top_areas[0][0]].rssi_distance or 0,
-                area_adverts[top_areas[1][0]].rssi_distance or 0,
-            )
+            # Get distances - use 0 for fingerprint-only areas (no scanner to measure from)
+            dist_0 = area_adverts[top_areas[0][0]].rssi_distance if top_areas[0][0] in area_adverts else 0
+            dist_1 = area_adverts[top_areas[1][0]].rssi_distance if top_areas[1][0] in area_adverts else 0
+            result.distance = (dist_0 or 0, dist_1 or 0)
             # Calculate weight ratio as a proxy for confidence
             total_weight = sum(area_weights.values())
             if total_weight > 0:
                 result.pcnt_diff = top_areas[0][1] / total_weight
         else:
-            result.areas = (area_names.get(winning_area_id, ""), "")
-            result.distance = (winning_advert.rssi_distance or 0, 0)
+            result.areas = (get_area_name(winning_area_id), "")
+            result.distance = (winning_advert.rssi_distance or 0 if winning_advert else 0, 0)
             result.pcnt_diff = 1.0
 
-        result.scannername = (
-            winning_advert.name,
-            area_adverts[top_areas[1][0]].name if len(top_areas) >= 2 else "",
-        )
+        # Get scanner names - fingerprint-only areas show as "(fingerprint)"
+        scanner_name_0 = winning_advert.name if winning_advert else "(fingerprint)"
+        scanner_name_1 = ""
+        if len(top_areas) >= 2:
+            advert_1 = area_adverts.get(top_areas[1][0])
+            scanner_name_1 = advert_1.name if advert_1 else "(fingerprint)"
+        result.scannername = (scanner_name_0, scanner_name_1)
 
         # Build reason string with weight breakdown
         weight_str = ", ".join(
-            f"{area_names.get(area_id, area_id)}: {weight:.2f}" for area_id, weight in sorted_areas[:3]
+            f"{get_area_name(area_id)}: {weight:.2f}" for area_id, weight in sorted_areas[:3]
         )
-        result.reason = f"Weighted vote ({len(valid_adverts)} scanners): {weight_str}"
+        fingerprint_note = " (includes fingerprint)" if winning_advert is None else ""
+        result.reason = f"Weighted vote ({len(valid_adverts)} scanners){fingerprint_note}: {weight_str}"
 
         result.winning_advert = winning_advert
 
@@ -499,6 +518,11 @@ class WeightedAreaSelector(AreaSelectorBase):
         Collects current RSSI readings and compares against stored fingerprints.
         Areas with high fingerprint similarity get their weights boosted.
 
+        For areas WITHOUT scanners but WITH trained fingerprints, this method
+        can ADD them to the candidate pool based on fingerprint similarity alone.
+        This enables detection in areas that have no local scanner but have been
+        trained with RSSI patterns from nearby scanners.
+
         Args:
             area_weights: Dict of area_id to current weight (modified in place).
             valid_adverts: List of valid adverts with current RSSI readings.
@@ -518,12 +542,25 @@ class WeightedAreaSelector(AreaSelectorBase):
         if not similarity_scores:
             return
 
+        # Calculate base weight for areas without scanners
+        # Use the average of existing area weights as a reference point
+        base_weight = 0.0
+        if area_weights:
+            base_weight = sum(area_weights.values()) / len(area_weights)
+
         # Apply similarity scores to area weights
-        # Formula: new_weight = weight * (1 + fingerprint_weight * similarity)
-        # This boosts weights proportionally to fingerprint match quality
-        # With fingerprint_weight=0.5 and similarity=1.0, weight increases by 50%
-        # With fingerprint_weight=0.5 and similarity=0.5, weight increases by 25%
+        # For areas WITH scanners: boost existing weight proportionally
+        # For areas WITHOUT scanners: add them with weight based on fingerprint similarity
         for area_id, similarity in similarity_scores.items():
             if area_id in area_weights:
+                # Boost existing weight
+                # Formula: new_weight = weight * (1 + fingerprint_weight * similarity)
+                # With fingerprint_weight=0.5 and similarity=1.0, weight increases by 50%
                 boost_factor = 1.0 + self.fingerprint_weight * similarity
                 area_weights[area_id] *= boost_factor
+            elif similarity > 0.3:
+                # Add scanner-less area based on fingerprint match
+                # Weight = base_weight * fingerprint_weight * similarity
+                # This lets trained areas without scanners compete with scanner-based areas
+                # Only add if similarity is reasonably strong (> 0.3)
+                area_weights[area_id] = base_weight * self.fingerprint_weight * similarity
