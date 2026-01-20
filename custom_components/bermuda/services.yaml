@@ -13,3 +13,20 @@ dump_devices:
       required: false
       example: "False"
       default: false
+
+train_location:
+  name: Train Location
+  description: Train the area selector with a known device location. Records RSSI fingerprints and updates HMM transitions.
+  fields:
+    device_address:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF"
+      description: The MAC address of the device to train
+      selector:
+        text:
+    area_id:
+      required: true
+      example: "living_room"
+      description: The ID of the area the device is currently in
+      selector:
+        area:

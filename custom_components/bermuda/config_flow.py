@@ -20,10 +20,12 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
+from .area_selectors import get_available_selectors
 from .const import (
     ADDR_TYPE_IBEACON,
     ADDR_TYPE_PRIVATE_BLE_DEVICE,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
+    CONF_AREA_SELECTOR,
     CONF_ATTENUATION,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
@@ -36,6 +38,7 @@ from .const import (
     CONF_SCANNERS,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_AREA_SELECTOR,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_MAX_RADIUS,
@@ -188,6 +191,7 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
             menu_options={
                 "globalopts": "Global Options",
                 "selectdevices": "Select Devices",
+                "area_algorithm": "Area Algorithm",
                 "calibration1_global": "Calibration 1: Global",
                 "calibration2_scanners": "Calibration 2: Scanner RSSI Offsets",
             },
@@ -322,6 +326,33 @@ class BermudaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         }
 
         return self.async_show_form(step_id="selectdevices", data_schema=vol.Schema(data_schema))
+
+    async def async_step_area_algorithm(self, user_input=None):
+        """Handle area algorithm selection."""
+        if user_input is not None:
+            self.options.update(user_input)
+            return await self._update_options()
+
+        # Build selector options from available algorithms
+        algorithm_options = [
+            SelectOptionDict(value=selector["value"], label=selector["label"])
+            for selector in get_available_selectors()
+        ]
+
+        data_schema = {
+            vol.Required(
+                CONF_AREA_SELECTOR,
+                default=self.options.get(CONF_AREA_SELECTOR, DEFAULT_AREA_SELECTOR),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=algorithm_options,
+                    multiple=False,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        }
+
+        return self.async_show_form(step_id="area_algorithm", data_schema=vol.Schema(data_schema))
 
     async def async_step_calibration1_global(self, user_input=None):
         # FIXME: This is ridiculous. But I can't yet find a better way.

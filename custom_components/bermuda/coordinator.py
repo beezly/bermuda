@@ -52,6 +52,11 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import get_age, now
 
+from .area_selectors import (
+    AreaSelectorBase,
+    AreaSelectorConfig,
+    create_selector,
+)
 from .bermuda_device import BermudaDevice
 from .bermuda_irk import BermudaIrkManager
 from .const import (
@@ -61,6 +66,7 @@ from .const import (
     AREA_MAX_AD_AGE,
     BDADDR_TYPE_NOT_MAC48,
     BDADDR_TYPE_RANDOM_RESOLVABLE,
+    CONF_AREA_SELECTOR,
     CONF_ATTENUATION,
     CONF_DEVICES,
     CONF_DEVTRACK_TIMEOUT,
@@ -70,6 +76,7 @@ from .const import (
     CONF_RSSI_OFFSETS,
     CONF_SMOOTHING_SAMPLES,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_AREA_SELECTOR,
     DEFAULT_ATTENUATION,
     DEFAULT_DEVTRACK_TIMEOUT,
     DEFAULT_MAX_RADIUS,
@@ -247,6 +254,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self.options[CONF_SMOOTHING_SAMPLES] = DEFAULT_SMOOTHING_SAMPLES
         self.options[CONF_UPDATE_INTERVAL] = DEFAULT_UPDATE_INTERVAL
         self.options[CONF_RSSI_OFFSETS] = {}
+        self.options[CONF_AREA_SELECTOR] = DEFAULT_AREA_SELECTOR
 
         if hasattr(entry, "options"):
             # Firstly, on some calls (specifically during reload after settings changes)
@@ -255,6 +263,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             # serialise it properly when it goes into the device and scanner classes.
             for key, val in entry.options.items():
                 if key in (
+                    CONF_AREA_SELECTOR,
                     CONF_ATTENUATION,
                     CONF_DEVICES,
                     CONF_DEVTRACK_TIMEOUT,
@@ -269,6 +278,9 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         self.devices: dict[str, BermudaDevice] = {}
         # self.updaters: dict[str, BermudaPBDUCoordinator] = {}
 
+        # Initialize the area selector
+        self._area_selector: AreaSelectorBase = self._init_area_selector()
+
         # Register the dump_devices service
         hass.services.async_register(
             DOMAIN,
@@ -279,6 +291,20 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     vol.Optional("addresses"): cv.string,
                     vol.Optional("configured_devices"): cv.boolean,
                     vol.Optional("redact"): cv.boolean,
+                }
+            ),
+            SupportsResponse.ONLY,
+        )
+
+        # Register the train_location service for manual area training
+        hass.services.async_register(
+            DOMAIN,
+            "train_location",
+            self.service_train_location,
+            vol.Schema(
+                {
+                    vol.Required("device_address"): cv.string,
+                    vol.Required("area_id"): cv.string,
                 }
             ),
             SupportsResponse.ONLY,
@@ -520,6 +546,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                     dev.create_sensor_done,
                     dev.create_tracker_done,
                     dev.create_number_done,
+                    dev.create_select_done,
                 ]
             ):
                 dev.create_all_done = True
@@ -549,6 +576,13 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
         dev = self._get_device(address)
         if dev is not None:
             dev.create_number_done = True
+        self._check_all_platforms_created(address)
+
+    def select_created(self, address):
+        """Receives report from select platform that entities have been set up."""
+        dev = self._get_device(address)
+        if dev is not None:
+            dev.create_select_done = True
         self._check_all_platforms_created(address)
 
     # def button_created(self, address):
@@ -659,7 +693,7 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
                 # Recalculate smoothed distances, last_seen etc
                 device.calculate_data()
 
-            self._refresh_areas_by_min_distance()
+            self._refresh_areas()
 
             # We might need to freshen deliberately on first start if no new scanners
             # were discovered in the first scan update. This is likely if nothing has changed
@@ -1229,8 +1263,30 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             return getattr(areas, "name", "invalid_area")
         return None
 
+    def _init_area_selector(self) -> AreaSelectorBase:
+        """Initialize the area selector from configuration."""
+        selector_id = self.options.get(CONF_AREA_SELECTOR, DEFAULT_AREA_SELECTOR)
+        config = AreaSelectorConfig.from_options(self.options)
+        # Pass hass reference for selectors that need persistence (e.g., HMM)
+        config.extra["hass"] = self.hass
+        return create_selector(selector_id, config)
+
+    def _refresh_areas(self):
+        """Set area for ALL devices using the configured area selector."""
+        nowstamp = monotonic_time_coarse()
+        for device in self.devices.values():
+            if device.create_sensor:
+                result = self._area_selector.select_area(device, nowstamp)
+                if device.area_advert != result.winning_advert and result.reason:
+                    device.diag_area_switch = result.to_diagnostic_text()
+                device.apply_scanner_selection(result.winning_advert)
+
     def _refresh_areas_by_min_distance(self):
-        """Set area for ALL devices based on closest beacon."""
+        """Set area for ALL devices based on closest beacon.
+
+        DEPRECATED: Use _refresh_areas() instead. This method is kept temporarily
+        for comparison during migration validation.
+        """
         for device in self.devices.values():
             if (
                 # device.is_scanner is not True  # exclude scanners.
@@ -1616,6 +1672,123 @@ class BermudaDataUpdateCoordinator(DataUpdateCoordinator):
             else:
                 _LOGGER.debug("Dump devices redaction took %2f seconds", _stamp_redact_elapsed)
         return out
+
+    async def service_train_location(self, call: ServiceCall) -> ServiceResponse:
+        """Train the area selector with a known device location."""
+        device_address = call.data.get("device_address", "").lower()
+        area_id = call.data.get("area_id", "")
+
+        # Validate device exists
+        device = self.devices.get(device_address)
+        if device is None:
+            return {
+                "success": False,
+                "error": f"Device {device_address} not found",
+            }
+
+        # Validate area exists
+        area = self.ar.async_get_area(area_id)
+        if area is None:
+            return {
+                "success": False,
+                "error": f"Area {area_id} not found",
+            }
+
+        # Check if selector supports training
+        if not hasattr(self._area_selector, "train_location"):
+            return {
+                "success": False,
+                "error": "Current area selector does not support training",
+            }
+
+        # Train the selector
+        nowstamp = monotonic_time_coarse()
+        result = self._area_selector.train_location(
+            device=device,
+            area_id=area_id,
+            area_name=area.name,
+            current_stamp=nowstamp,
+        )
+
+        _LOGGER.info(
+            "Trained location for %s in %s: %d fingerprint readings, %d transition recorded",
+            device.name or device_address,
+            area.name,
+            result.get("fingerprints", 0),
+            result.get("transitions", 0),
+        )
+
+        return {
+            "success": True,
+            "device": device.name or device_address,
+            "area": area.name,
+            "fingerprints_recorded": result.get("fingerprints", 0),
+            "transition_recorded": result.get("transitions", 0),
+        }
+
+    def train_device_location(self, device_address: str, area_id: str) -> dict:
+        """
+        Train the area selector with a known device location.
+
+        This is a synchronous wrapper for use by entities like the select entity.
+
+        Args:
+            device_address: The MAC address of the device to train.
+            area_id: The ID of the area the device is in.
+
+        Returns:
+            Dict with success status and training results.
+
+        """
+        device_address = device_address.lower()
+
+        # Validate device exists
+        device = self.devices.get(device_address)
+        if device is None:
+            return {
+                "success": False,
+                "error": f"Device {device_address} not found",
+            }
+
+        # Validate area exists
+        area = self.ar.async_get_area(area_id)
+        if area is None:
+            return {
+                "success": False,
+                "error": f"Area {area_id} not found",
+            }
+
+        # Check if selector supports training
+        if not hasattr(self._area_selector, "train_location"):
+            return {
+                "success": False,
+                "error": "Current area selector does not support training",
+            }
+
+        # Train the selector
+        nowstamp = monotonic_time_coarse()
+        result = self._area_selector.train_location(
+            device=device,
+            area_id=area_id,
+            area_name=area.name,
+            current_stamp=nowstamp,
+        )
+
+        _LOGGER.info(
+            "Trained location for %s in %s: %d fingerprint readings, %d transition recorded",
+            device.name or device_address,
+            area.name,
+            result.get("fingerprints", 0),
+            result.get("transitions", 0),
+        )
+
+        return {
+            "success": True,
+            "device": device.name or device_address,
+            "area": area.name,
+            "fingerprints_recorded": result.get("fingerprints", 0),
+            "transition_recorded": result.get("transitions", 0),
+        }
 
     def redaction_list_update(self):
         """

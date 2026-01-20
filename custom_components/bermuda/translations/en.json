@@ -54,6 +54,16 @@
         "title": "Select Devices",
         "description": "Choose which devices you wish to track. If no devices appear below, then Bermuda is not seeing any data coming from Bluetooth scanners. Ensure you have an esphome ble_proxy device, Shelly devices with bluetooth proxy configured or a local bluetooth adaptor."
       },
+      "area_algorithm": {
+        "title": "Area Algorithm",
+        "description": "Select the algorithm used to determine which area a device is in.\n\n**Minimum Distance**: Uses the closest scanner's area. Includes hysteresis to prevent bouncing.\n\n**Weighted Area Voting**: Uses inverse-distance weighting from ALL visible scanners. Each scanner votes for its area proportional to how close the device is. Better for devices near area boundaries.",
+        "data": {
+          "area_selector": "Area Selection Algorithm"
+        },
+        "data_description": {
+          "area_selector": "Choose which algorithm to use for determining device area/location. Weighted Area Voting considers multiple scanners simultaneously and may provide more stable results near boundaries."
+        }
+      },
       "calibration1_global": {
         "title": "Calibration 1: Global",
         "description": "This step is to establish some global defaults for distance calculations.\n\n{details}\n{summary}\nExpand for instructions!{summary_end}\n\nIn later steps you can set per-device overrides, so it makes sense to choose your most common hardware as a 'reference pair' for this step. For example, if most of your scanners are ESPHome on a particular board, then choose one of those to use as the reference scanner. Likewise if you have a handful of a particular model of beacon, use one of those as your reference device.\n\n- Choose a device and a scanner below to use as your 'reference pair'\n- Physically place your chosen device at 1m (one metre) from the chosen scanner. Ensure they have a clear line of sight to each other, and avoid having them close to any organic life-forms which might interfere with the signal.\n- Click 'SUBMIT' and note the RSSI values in the table that will appear below. You can click 'SUBMIT' again at any time to refresh the values.\n- Once you have a stable signal strength, put that value into the `reference_power` field and click 'SUBMIT'.\n- You should now see the updated values, and the estimated distances should be close to 1 metre. Repeat as required until you are happy with the result.\n- Now move the device so that it is further from the scanner and measure this distance with a tape measure. Around 5 metres might be a good distance - the exact distance doesn't matter, but keeping a clear line of sight is important, and you might find longer distances will give you more accuracy, generally.\n- With the device at the new distance, click 'SUBMIT' again and you should see the most recent measurements will reflect the new distance, but will probably be inaccurate.\n- Experiment with different values for `attenuation` and clicking 'SUBMIT', until you get the estimated measurements to agree with your physical measurement.\n- Once you are happy with the calibration, tick 'Save and Close' and click 'SUBMIT'.\n{details_end}\n{suffix}",
@@ -92,9 +102,31 @@
       "area": {
         "name": "Area"
       }
+    },
+    "select": {
+      "train_location": {
+        "name": "Train Location",
+        "state": {
+          "none": "None"
+        }
+      }
     }
   },
   "services": {
+    "train_location": {
+      "name": "Train Location",
+      "description": "Train the area selector with a known device location. Records RSSI fingerprints and updates HMM transitions.",
+      "fields": {
+        "device_address": {
+          "name": "Device Address",
+          "description": "The MAC address of the device to train"
+        },
+        "area_id": {
+          "name": "Area",
+          "description": "The area the device is currently in"
+        }
+      }
+    },
     "dump_devices": {
       "name": "Dump Devices",
       "description": "Returns the internal data structure, optionally limited to the given address(es). Includes the rssi and other info from each scanner",

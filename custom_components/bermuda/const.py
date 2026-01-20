@@ -39,6 +39,7 @@ PLATFORMS = [
     Platform.SENSOR,
     Platform.DEVICE_TRACKER,
     Platform.NUMBER,
+    Platform.SELECT,
     # Platform.BUTTON,
     # Platform.SWITCH,
     # Platform.BINARY_SENSOR
@@ -193,6 +194,9 @@ DOCS[CONF_SMOOTHING_SAMPLES] = (
     "How many samples to average distance smoothing. Bigger numbers"
     " make for slower distance increases. 10 or 20 seems good."
 )
+
+CONF_AREA_SELECTOR, DEFAULT_AREA_SELECTOR = "area_selector", "min_distance"
+DOCS[CONF_AREA_SELECTOR] = "Algorithm used to determine which area a device is in."
 
 # Defaults
 DEFAULT_NAME = DOMAIN
